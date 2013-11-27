@@ -38,15 +38,24 @@ ${project.name} (${project.artifactId})
 
   * {{{./add-resource-mojo.html}jboss-as:add-resource}} adds a resource.
 
-  * {{{./deploy-mojo.html}jboss-as:deploy}} deploys the application to.
+  * {{{./deploy-mojo.html}jboss-as:deploy}} deploys the application to the application server.
+
+  * {{{./deploy-only-mojo.html}jboss-as:deploy-only}} deploys the application to application server invoking no other goals by default.
 
   * {{{./deploy-artifact-mojo.html}jboss-as:deploy-artifact}} deploys an arbitrary artifact to the server.
 
   * {{{./redeploy-mojo.html}jboss-as:redeploy}} redeploys the application.
 
+  * {{{./redeploy-only-mojo.html}jboss-as:redeploy-only}} redeploys the application invoking no other goals by default.
+
   * {{{./undeploy-mojo.html}jboss-as:undeploy}} undeploys the application.
 
   * {{{./run-mojo.html}jboss-as:run}} runs the application server and deploys your application.
+
+  * {{{./start-mojo.html}jboss-as:start}} starts the application server and shuts it down at last when the maven process
+    ends unless an explicit shutdown from a management client or the {{{./shutdown-mojo.html}shutdown goal}} is executed.
+
+  * {{{./shutdown-mojo.html}jboss-as:shutdown}} shuts down a running application server.
 
   * {{{./execute-commands-mojo.html}jboss-as:execute-commands}} executes commands on the running server.
 

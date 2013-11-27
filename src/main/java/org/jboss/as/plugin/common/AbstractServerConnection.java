@@ -26,10 +26,13 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+
 import javax.security.auth.callback.CallbackHandler;
 
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.settings.Server;
+import org.apache.maven.settings.Settings;
 import org.jboss.as.controller.client.ModelControllerClient;
 import org.jboss.as.controller.client.helpers.domain.DomainClient;
 import org.jboss.dmr.ModelNode;
@@ -42,6 +45,14 @@ import org.jboss.dmr.ModelNode;
  */
 public abstract class AbstractServerConnection extends AbstractMojo implements ConnectionInfo, Closeable {
 
+    public static final String DEBUG_MESSAGE_NO_CREDS = "No username and password in settings.xml file - falling back to CLI entry";
+    public static final String DEBUG_MESSAGE_NO_ID = "No <id> element was found in the POM - Getting credentials from CLI entry";
+    public static final String DEBUG_MESSAGE_NO_SERVER_SECTION = "No <server> section was found for the specified id";
+    public static final String DEBUG_MESSAGE_NO_SETTINGS_FILE = "No settings.xml file was found in this Mojo's execution context";
+    public static final String DEBUG_MESSAGE_POM_HAS_CREDS = "Getting credentials from the POM";
+    public static final String DEBUG_MESSAGE_SETTINGS_HAS_CREDS = "Found username and password in the settings.xml file";
+    public static final String DEBUG_MESSAGE_SETTINGS_HAS_ID = "Found the server's id in the settings.xml file";
+
     protected static final Object CLIENT_LOCK = new Object();
 
     private volatile InetAddress address = null;
@@ -51,14 +62,27 @@ public abstract class AbstractServerConnection extends AbstractMojo implements C
     /**
      * Specifies the host name of the server where the deployment plan should be executed.
      */
-    @Parameter(defaultValue = "localhost", property = "jboss-as.hostname")
+    @Parameter(defaultValue = "localhost", property = PropertyNames.HOSTNAME)
     private String hostname;
 
     /**
      * Specifies the port number the server is listening on.
      */
-    @Parameter(defaultValue = "9999", property = "jboss-as.port")
+    @Parameter(defaultValue = "9999", property = PropertyNames.PORT)
     private int port;
+
+   /**
+     * Specifies the id of the server if the username and password is to be
+     * retrieved from the settings.xml file
+     */
+    @Parameter(property = PropertyNames.ID)
+    private String id;
+
+    /**
+     * Provides a reference to the settings file.
+     */
+    @Parameter(property = "settings", readonly = true, required = true, defaultValue = "${settings}")
+    private Settings settings;
 
     /**
      * Specifies the username to use if prompted to authenticate by the server.
@@ -66,7 +90,7 @@ public abstract class AbstractServerConnection extends AbstractMojo implements C
      * If no username is specified and the server requests authentication the user
      * will be prompted to supply the username,
      */
-    @Parameter(property = "jboss-as.username")
+    @Parameter(property = PropertyNames.USERNAME)
     private String username;
 
     /**
@@ -75,7 +99,7 @@ public abstract class AbstractServerConnection extends AbstractMojo implements C
      * If no password is specified and the server requests authentication the user
      * will be prompted to supply the password,
      */
-    @Parameter(property = "jboss-as.password")
+    @Parameter(property = PropertyNames.PASSWORD)
     private String password;
 
     private ModelControllerClient client;
@@ -140,7 +164,7 @@ public abstract class AbstractServerConnection extends AbstractMojo implements C
     @Override
     public final void close() {
         synchronized (CLIENT_LOCK) {
-            Streams.safeClose(client);
+            IoUtils.safeClose(client);
             client = null;
         }
     }
@@ -151,7 +175,7 @@ public abstract class AbstractServerConnection extends AbstractMojo implements C
      * @return the address.
      */
     @Override
-    public synchronized final InetAddress getHostAddress() {
+    public final synchronized InetAddress getHostAddress() {
         InetAddress result = address;
         // Lazy load the address
         if (result == null) {
@@ -165,25 +189,56 @@ public abstract class AbstractServerConnection extends AbstractMojo implements C
     }
 
     @Override
-    public synchronized final CallbackHandler getCallbackHandler() {
+    public final synchronized CallbackHandler getCallbackHandler() {
         CallbackHandler result = handler;
         if (result == null) {
+            if(username == null && password == null) {
+                if(id != null) {
+                    getCredentialsFromSettings();
+                } else {
+                    getLog().debug(DEBUG_MESSAGE_NO_ID);
+                }
+            } else {
+                getLog().debug(DEBUG_MESSAGE_POM_HAS_CREDS);
+            }
             result = handler = new ClientCallbackHandler(username, password);
         }
         return result;
     }
 
+    private void getCredentialsFromSettings() {
+        if(settings != null) {
+            Server server = settings.getServer(id);
+            if(server != null) {
+                getLog().debug(DEBUG_MESSAGE_SETTINGS_HAS_ID);
+                password = server.getPassword();
+                username = server.getUsername();
+                if(username != null && password != null) {
+                    getLog().debug(DEBUG_MESSAGE_SETTINGS_HAS_CREDS);
+                } else {
+                    getLog().debug(DEBUG_MESSAGE_NO_CREDS);
+                }
+            } else {
+                getLog().debug(DEBUG_MESSAGE_NO_SERVER_SECTION);
+            }
+        } else {
+            getLog().debug(DEBUG_MESSAGE_NO_SETTINGS_FILE);
+        }
+    }
+
     private boolean isDomainServer(final ModelControllerClient client) {
         boolean result = false;
         // Check this is really a domain server
-        final ModelNode op = Operations.createReadAttributeOperation(Operations.LAUNCH_TYPE);
+        final ModelNode op = ServerOperations.createReadAttributeOperation(ServerOperations.LAUNCH_TYPE);
         try {
             final ModelNode opResult = client.execute(op);
-            if (Operations.successful(opResult)) {
-                result = ("DOMAIN".equals(Operations.readResultAsString(opResult)));
+            if (ServerOperations.isSuccessfulOutcome(opResult)) {
+                result = ("DOMAIN".equals(ServerOperations.readResultAsString(opResult)));
             }
         } catch (IOException e) {
-            throw new IllegalStateException(String.format("Error could not execute operation '%s'.", op), e);
+            if ( getLog().isDebugEnabled() )
+                getLog().debug(e);
+            throw new IllegalStateException(String.format("I/O Error could not execute operation '%s'", op), e);
         }
         return result;
     }

@@ -26,13 +26,11 @@ import java.io.File;
 import java.util.Set;
 
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.plugins.annotations.Execute;
-import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 import org.jboss.as.plugin.common.DeploymentFailureException;
+import org.jboss.as.plugin.common.PropertyNames;
 import org.jboss.as.plugin.deployment.Deployment.Type;
 
 /**
@@ -40,8 +38,7 @@ import org.jboss.as.plugin.deployment.Deployment.Type;
  *
  * @author <a href="mailto:jperkins@redhat.com">James R. Perkins</a>
  */
-@Mojo(name = "undeploy-artifact", requiresDependencyResolution = ResolutionScope.RUNTIME, threadSafe = true)
-@Execute(phase = LifecyclePhase.PACKAGE)
+@Mojo(name = "undeploy-artifact", threadSafe = true)
 public final class UndeployArtifact extends AbstractDeployment {
 
     /**
@@ -63,7 +60,7 @@ public final class UndeployArtifact extends AbstractDeployment {
     /**
      * Indicates whether undeploy should ignore the undeploy operation if the deployment does not exist.
      */
-    @Parameter(defaultValue = "true", property = "undeploy.ignoreMissingDeployment")
+    @Parameter(defaultValue = "true", property = PropertyNames.IGNORE_MISSING_DEPLOYMENT)
     private boolean ignoreMissingDeployment;
 
     /**

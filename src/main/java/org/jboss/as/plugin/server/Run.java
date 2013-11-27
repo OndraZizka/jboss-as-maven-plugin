@@ -22,16 +22,9 @@
 
 package org.jboss.as.plugin.server;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.Enumeration;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -42,25 +35,19 @@ import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
-import org.apache.maven.project.MavenProject;
 import org.jboss.as.controller.client.ModelControllerClient;
 import org.jboss.as.plugin.common.DeploymentFailureException;
-import org.jboss.as.plugin.common.Operations;
-import org.jboss.as.plugin.common.Streams;
+import org.jboss.as.plugin.common.Files;
+import org.jboss.as.plugin.common.PropertyNames;
+import org.jboss.as.plugin.common.ServerOperations;
 import org.jboss.as.plugin.deployment.Deploy;
 import org.jboss.as.plugin.deployment.Deployment;
-import org.jboss.as.plugin.deployment.Deployment.Type;
 import org.jboss.as.plugin.deployment.standalone.StandaloneDeployment;
-import org.sonatype.aether.RepositorySystem;
-import org.sonatype.aether.RepositorySystemSession;
-import org.sonatype.aether.repository.RemoteRepository;
-import org.sonatype.aether.resolution.ArtifactRequest;
-import org.sonatype.aether.resolution.ArtifactResolutionException;
-import org.sonatype.aether.resolution.ArtifactResult;
-import org.sonatype.aether.util.artifact.DefaultArtifact;
 
 /**
  * Starts a standalone instance of JBoss Application Server 7 and deploys the application to the server.
+ * <p/>
+ * This goal will block until cancelled or a shutdown is invoked from a management client.
  *
  * @author Stuart Douglas
  * @author <a href="mailto:jperkins@redhat.com">James R. Perkins</a>
@@ -71,71 +58,94 @@ public class Run extends Deploy {
 
     public static final String JBOSS_DIR = "jboss-as-run";
 
-    /**
-     * The entry point to Aether, i.e. the component doing all the work.
-     */
     @Component
-    private RepositorySystem repoSystem;
-
-    /**
-     * The current repository/network configuration of Maven.
-     */
-    @Parameter(defaultValue = "${repositorySystemSession}", readonly = true)
-    private RepositorySystemSession repoSession;
-
-    /**
-     * The project's remote repositories
-     */
-    @Parameter(defaultValue = "${project.remotePluginRepositories}", readonly = true)
-    private List<RemoteRepository> remoteRepos;
+    private ArtifactResolver artifactResolver;
 
     /**
      * The JBoss Application Server's home directory. If not used, JBoss Application Server will be downloaded.
      */
-    @Parameter(alias = "jboss-home", property = "jboss-as.home")
+    @Parameter(alias = "jboss-home", property = PropertyNames.JBOSS_HOME)
     private String jbossHome;
 
     /**
-     * The version of the JBoss Application Server to run.
+     * A string of the form groupId:artifactId:version[:packaging][:classifier]. Any missing portion of the artifact
+     * will be replaced with the it's appropriate default property value
      */
-    @Parameter(alias = "jboss-as-version", defaultValue = "7.1.1.Final", property = "jboss-as.version")
+    @Parameter(property = PropertyNames.JBOSS_ARTIFACT)
+    private String artifact;
+
+    /**
+     * The {@code groupId} of the artifact to download. Ignored if {@link #artifact} {@code groupId} portion is used.
+     */
+    @Parameter(defaultValue = Defaults.JBOSS_AS_GROUP_ID, property = PropertyNames.JBOSS_GROUP_ID)
+    private String groupId;
+
+    /**
+     * The {@code artifactId} of the artifact to download. Ignored if {@link #artifact} {@code artifactId} portion is
+     * used.
+     */
+    @Parameter(defaultValue = Defaults.JBOSS_AS_ARTIFACT_ID, property = PropertyNames.JBOSS_ARTIFACT_ID)
+    private String artifactId;
+
+    /**
+     * The {@code classifier} of the artifact to download. Ignored if {@link #artifact} {@code classifier} portion is
+     * used.
+     */
+    @Parameter(property = PropertyNames.JBOSS_CLASSIFIER)
+    private String classifier;
+
+    /**
+     * The {@code packaging} of the artifact to download. Ignored if {@link #artifact} {@code packing} portion is used.
+     */
+    @Parameter(property = PropertyNames.JBOSS_PACKAGING, defaultValue = Defaults.JBOSS_AS_PACKAGING)
+    private String packaging;
+
+    /**
+     * The {@code version} of the artifact to download. Ignored if {@link #artifact} {@code version} portion is used.
+     */
+    @Parameter(alias = "jboss-as-version", defaultValue = Defaults.JBOSS_AS_TARGET_VERSION, property = PropertyNames.JBOSS_VERSION)
     private String version;
 
     /**
      * The modules path to use.
      */
-    @Parameter(alias = "modules-path", property = "jboss-as.modulesPath")
+    @Parameter(alias = "modules-path", property = PropertyNames.MODULES_PATH)
     private String modulesPath;
 
     /**
      * The bundles path to use.
      */
-    @Parameter(alias = "bundles-path", property = "jboss-as.bundlesPath")
+    @Parameter(alias = "bundles-path", property = PropertyNames.BUNDLES_PATH)
     private String bundlesPath;
 
     /**
      * A space delimited list of JVM arguments.
      */
-    @Parameter(alias = "jvm-args", property = "jboss-as.jvmArgs",
-            defaultValue = "-Xms64m -Xmx512m -XX:MaxPermSize=256m -Djava.net.preferIPv4Stack=true -Dorg.jboss.resolver.warning=true -Dsun.rmi.dgc.client.gcInterval=3600000 -Dsun.rmi.dgc.server.gcInterval=3600000")
+    @Parameter(alias = "jvm-args", property = PropertyNames.JVM_ARGS, defaultValue = Defaults.DEFAULT_JVM_ARGS)
     private String jvmArgs;
 
     /**
      * The {@code JAVA_HOME} to use for launching the server.
      */
-    @Parameter(alias = "java-home", property = "java.home")
+    @Parameter(alias = "java-home", property = PropertyNames.JAVA_HOME)
     private String javaHome;
 
     /**
      * The path to the server configuration to use.
      */
-    @Parameter(alias = "server-config", property = "jboss-as.serverConfig")
+    @Parameter(alias = "server-config", property = PropertyNames.SERVER_CONFIG)
     private String serverConfig;
+
+    /**
+     * The path to the system properties file to load.
+     */
+    @Parameter(alias = "properties-file", property = PropertyNames.PROPERTIES_FILE)
+    private String propertiesFile;
 
     /**
      * The timeout value to use when starting the server.
      */
-    @Parameter(alias = "startup-timeout", defaultValue = "60", property = "jboss-as.startupTimeout")
+    @Parameter(alias = "startup-timeout", defaultValue = Defaults.TIMEOUT, property = PropertyNames.STARTUP_TIMEOUT)
     private long startupTimeout;
 
     @Override
@@ -161,33 +171,19 @@ public class Run extends Deploy {
         } else {
             javaHome = this.javaHome;
         }
-        final ServerInfo serverInfo = ServerInfo.of(this, javaHome, jbossHome, modulesPath, bundlesPath, jvmArgs, serverConfig, startupTimeout);
+        final ServerInfo serverInfo = ServerInfo.of(this, javaHome, jbossHome, modulesPath, bundlesPath, jvmArgs, serverConfig, propertiesFile, startupTimeout);
         if (!serverInfo.getModulesDir().isDirectory()) {
             throw new MojoExecutionException(String.format("Modules path '%s' is not a valid directory.", modulesPath));
         }
-        if (!serverInfo.getBundlesDir().isDirectory()) {
-            throw new MojoExecutionException(String.format("Bundles path '%s' is not a valid directory.", bundlesPath));
-        }
+
         // Print some server information
         log.info(String.format("JAVA_HOME=%s", javaHome));
         log.info(String.format("JBOSS_HOME=%s%n", jbossHome));
         try {
             // Create the server
             final Server server = new StandaloneServer(serverInfo);
-            final Thread shutdownThread = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    server.stop();
-                    // Bad hack to get maven to complete it's message output
-                    try {
-                        TimeUnit.MILLISECONDS.sleep(500L);
-                    } catch (InterruptedException ignore) {
-                        // no-op
-                    }
-                }
-            });
             // Add the shutdown hook
-            SecurityActions.addShutdownHook(shutdownThread);
+            SecurityActions.registerShutdown(server);
             // Start the server
             log.info("Server is starting up. Press CTRL + C to stop the server.");
             server.start();
@@ -196,10 +192,10 @@ public class Run extends Deploy {
             if (server.isRunning()) {
                 log.info(String.format("Deploying application '%s'%n", deploymentFile.getName()));
                 final ModelControllerClient client = server.getClient();
-                final Deployment deployment = StandaloneDeployment.create(client, deploymentFile, deploymentName, getType());
+                final Deployment deployment = StandaloneDeployment.create(client, deploymentFile, deploymentName, getType(), null, null);
                 switch (executeDeployment(client, deployment)) {
                     case REQUIRES_RESTART: {
-                        client.execute(Operations.createOperation(Operations.RELOAD));
+                        client.execute(ServerOperations.createOperation(ServerOperations.RELOAD));
                         break;
                     }
                     case SUCCESS:
@@ -222,62 +218,90 @@ public class Run extends Deploy {
             //we do not need to download JBoss
             return new File(jbossHome);
         }
-        final ArtifactRequest request = new ArtifactRequest();
-        final String jbossAsArtifact = String.format("org.jboss.as:jboss-as-dist:zip:%s", version);
-        request.setArtifact(new DefaultArtifact(jbossAsArtifact));
-        request.setRepositories(remoteRepos);
-        getLog().info(String.format("Resolving artifact %s from %s", jbossAsArtifact, remoteRepos));
-        final ArtifactResult result;
-        try {
-            result = repoSystem.resolveArtifact(repoSession, request);
-        } catch (ArtifactResolutionException e) {
-            throw new MojoExecutionException(e.getMessage(), e);
-        }
-
-        final byte buff[] = new byte[1024];
+        final File result = artifactResolver.resolve(project, createArtifact());
         final File target = new File(buildDir, JBOSS_DIR);
+        // Delete the target if it exists
         if (target.exists()) {
-            target.delete();
+            Files.deleteRecursively(target);
         }
-        ZipFile file = null;
+        target.mkdirs();
         try {
-            file = new ZipFile(result.getArtifact().getFile());
-            final Enumeration<? extends ZipEntry> entries = file.entries();
-            while (entries.hasMoreElements()) {
-                final ZipEntry entry = entries.nextElement();
-                final File extractTarget = new File(target.getAbsolutePath(), entry.getName());
-                if (entry.isDirectory()) {
-                    extractTarget.mkdirs();
-                } else {
-                    final File parent = new File(extractTarget.getParent());
-                    parent.mkdirs();
-                    final BufferedInputStream in = new BufferedInputStream(file.getInputStream(entry));
-                    try {
-                        final BufferedOutputStream out = new BufferedOutputStream(new FileOutputStream(extractTarget));
-                        try {
-                            int read = 0;
-                            while ((read = in.read(buff)) != -1) {
-                                out.write(buff, 0, read);
-                            }
-                        } finally {
-                            Streams.safeClose(out);
-                        }
-                    } finally {
-                        Streams.safeClose(in);
-                    }
-                }
-            }
+            Files.unzip(result, target);
         } catch (IOException e) {
-            throw new IllegalStateException(String.format("Error extracting '%s'", (file == null ? "null file" : file.getName())), e);
-        } finally {
-            Streams.safeClose(file);
+            throw new MojoFailureException("Artifact was not successfully extracted: " + result, e);
         }
-
-        return new File(target.getAbsoluteFile(), String.format("jboss-as-%s", version));
+        final File[] files = target.listFiles();
+        if (files == null || files.length != 1) {
+            throw new MojoFailureException("Artifact was not successfully extracted: " + result);
+        }
+        // Assume the first
+        return files[0];
     }
 
     @Override
     public String goal() {
         return "run";
+    }
+
+    private String createArtifact() throws MojoFailureException {
+        String groupId = this.groupId;
+        String artifactId = this.artifactId;
+        String classifier = this.classifier;
+        String packaging = this.packaging;
+        String version = this.version;
+        // groupId:artifactId:version[:packaging][:classifier].
+        if (artifact != null) {
+            final String[] artifactParts = artifact.split(":");
+            if (artifactParts.length == 0) {
+                throw new MojoFailureException(String.format("Invalid artifact pattern: %s", artifact));
+            }
+            String value;
+            switch (artifactParts.length) {
+                case 5:
+                    value = artifactParts[4].trim();
+                    if (!value.isEmpty()) {
+                        classifier = value;
+                    }
+                case 4:
+                    value = artifactParts[3].trim();
+                    if (!value.isEmpty()) {
+                        packaging = value;
+                    }
+                case 3:
+                    value = artifactParts[2].trim();
+                    if (!value.isEmpty()) {
+                        version = value;
+                    }
+                case 2:
+                    value = artifactParts[1].trim();
+                    if (!value.isEmpty()) {
+                        artifactId = value;
+                    }
+                case 1:
+                    value = artifactParts[0].trim();
+                    if (!value.isEmpty()) {
+                        groupId = value;
+                    }
+            }
+        }
+        // Validate the groupId, artifactId and version are not null
+        if (groupId == null || artifactId == null || version == null) {
+            throw new IllegalStateException("The groupId, artifactId and version parameters are required");
+        }
+        final StringBuilder result = new StringBuilder();
+        result.append(groupId)
+                .append(':')
+                .append(artifactId)
+                .append(':')
+                .append(version)
+                .append(':');
+        if (packaging != null) {
+            result.append(packaging);
+        }
+        result.append(':');
+        if (classifier != null) {
+            result.append(classifier);
+        }
+        return result.toString();
     }
 }

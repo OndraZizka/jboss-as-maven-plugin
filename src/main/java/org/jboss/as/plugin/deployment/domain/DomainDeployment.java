@@ -24,7 +24,6 @@ package org.jboss.as.plugin.deployment.domain;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -45,9 +44,9 @@ import org.jboss.as.controller.client.helpers.domain.ServerStatus;
 import org.jboss.as.controller.client.helpers.domain.ServerUpdateResult;
 import org.jboss.as.plugin.common.DeploymentExecutionException;
 import org.jboss.as.plugin.common.DeploymentFailureException;
-import org.jboss.as.plugin.common.Operations;
+import org.jboss.as.plugin.common.DeploymentInspector;
 import org.jboss.as.plugin.deployment.Deployment;
-import org.jboss.dmr.ModelNode;
+import org.jboss.as.plugin.deployment.MatchPatternStrategy;
 
 /**
  * @author <a href="mailto:jperkins@redhat.com">James R. Perkins</a>
@@ -59,49 +58,59 @@ public class DomainDeployment implements Deployment {
     private final Domain domain;
     private final String name;
     private final Type type;
+    private final String matchPattern;
+    private final MatchPatternStrategy matchPatternStrategy;
 
     /**
      * Creates a new deployment.
      *
-     * @param client  the client for the server
-     * @param domain  the domain information
-     * @param content the content for the deployment
-     * @param name    the name of the deployment, if {@code null} the name of the content file is used
-     * @param type    the deployment type
+     * @param client               the client for the server
+     * @param domain               the domain information
+     * @param content              the content for the deployment
+     * @param name                 the name of the deployment, if {@code null} the name of the content file is used
+     * @param type                 the deployment type
+     * @param matchPattern         the pattern for matching multiple artifacts, if {@code null} the name is used.
+     * @param matchPatternStrategy the strategy for handling multiple artifacts.
      */
-    public DomainDeployment(final DomainClient client, final Domain domain, final File content, final String name, final Type type) {
+    public DomainDeployment(final DomainClient client, final Domain domain, final File content, final String name, final Type type,
+                            final String matchPattern, final MatchPatternStrategy matchPatternStrategy) {
         this.content = content;
         this.client = client;
         this.domain = domain;
         this.name = (name == null ? content.getName() : name);
         this.type = type;
+        this.matchPattern = matchPattern;
+        this.matchPatternStrategy = matchPatternStrategy;
     }
 
     /**
      * Creates a new deployment.
      *
-     * @param client  the client for the server
-     * @param domain  the domain information
-     * @param content the content for the deployment
-     * @param name    the name of the deployment, if {@code null} the name of the content file is used
-     * @param type    the deployment type
+     * @param client               the client for the server
+     * @param domain               the domain information
+     * @param content              the content for the deployment
+     * @param name                 the name of the deployment, if {@code null} the name of the content file is used
+     * @param type                 the deployment type
+     * @param matchPattern         the pattern for matching multiple artifacts, if {@code null} the name is used.
+     * @param matchPatternStrategy the strategy for handling multiple artifacts.
      *
      * @return the new deployment
      */
-    public static DomainDeployment create(final DomainClient client, final Domain domain, final File content, final String name, final Type type) {
-        return new DomainDeployment(client, domain, content, name, type);
+    public static DomainDeployment create(final DomainClient client, final Domain domain, final File content, final String name, final Type type,
+                                          final String matchPattern, final MatchPatternStrategy matchPatternStrategy) {
+        return new DomainDeployment(client, domain, content, name, type, matchPattern, matchPatternStrategy);
     }
 
     private DeploymentPlan createPlan(final DeploymentPlanBuilder builder) throws IOException, DuplicateDeploymentNameException, DeploymentFailureException {
-        final boolean deploymentExists = exists();
         DeploymentActionsCompleteBuilder completeBuilder = null;
+        List<String> existingDeployments = DeploymentInspector.getDeployments(client, name, matchPattern);
         switch (type) {
             case DEPLOY: {
                 completeBuilder = builder.add(name, content).andDeploy();
                 break;
             }
             case FORCE_DEPLOY: {
-                if (deploymentExists) {
+                if (existingDeployments.contains(name)) {
                     completeBuilder = builder.replace(name, content);
                 } else {
                     completeBuilder = builder.add(name, content).andDeploy();
@@ -113,12 +122,14 @@ public class DomainDeployment implements Deployment {
                 break;
             }
             case UNDEPLOY: {
-                completeBuilder = builder.undeploy(name).andRemoveUndeployed();
+                validateExistingDeployments(existingDeployments);
+                completeBuilder = undeployAndRemoveUndeployed(builder, existingDeployments);
                 break;
             }
             case UNDEPLOY_IGNORE_MISSING: {
-                if (deploymentExists) {
-                    completeBuilder = builder.undeploy(name).andRemoveUndeployed();
+                validateExistingDeployments(existingDeployments);
+                if (!existingDeployments.isEmpty()) {
+                    completeBuilder = undeployAndRemoveUndeployed(builder, existingDeployments);
                 } else {
                     return null;
                 }
@@ -133,9 +144,36 @@ public class DomainDeployment implements Deployment {
             if (groupDeploymentBuilder == null) {
                 throw new DeploymentFailureException("No server groups were defined for the deployment.");
             }
-            return groupDeploymentBuilder.build();
+            return groupDeploymentBuilder.withRollback().build();
         }
         throw new IllegalStateException(String.format("Invalid type '%s' for deployment", type));
+    }
+
+    private DeploymentActionsCompleteBuilder undeployAndRemoveUndeployed(
+            final DeploymentPlanBuilder builder, final List<String> deploymentNames) {
+
+        DeploymentActionsCompleteBuilder completeBuilder = null;
+        for (String deploymentName : deploymentNames) {
+
+            completeBuilder = builder.undeploy(deploymentName).andRemoveUndeployed();
+
+            if (matchPatternStrategy == MatchPatternStrategy.FIRST) {
+                break;
+            }
+        }
+
+        return completeBuilder;
+    }
+
+    private void validateExistingDeployments(List<String> existingDeployments) throws DeploymentFailureException {
+        if (matchPattern == null) {
+            return;
+        }
+
+        if (matchPatternStrategy == MatchPatternStrategy.FAIL && existingDeployments.size() > 1) {
+            throw new DeploymentFailureException(String.format("Deployment failed, found %d deployed artifacts for pattern '%s' (%s)",
+                    existingDeployments.size(), matchPattern, existingDeployments));
+        }
     }
 
     @Override
@@ -170,7 +208,7 @@ public class DomainDeployment implements Deployment {
                     ServerStatus currentStatus = statuses.get(serverId);
                     if (currentStatus != ServerStatus.STARTED) {
                         throw new DeploymentFailureException("Status of server group '%s' is '%s', but is required to be '%s'.",
-                                        serverGroup, currentStatus, ServerStatus.STARTED);
+                                serverGroup, currentStatus, ServerStatus.STARTED);
                     }
                     notFound = false;
                     break;
@@ -204,28 +242,5 @@ public class DomainDeployment implements Deployment {
                 }
             }
         }
-    }
-
-    private boolean exists() {
-        final ModelNode op = Operations.createListDeploymentsOperation();
-        final ModelNode result;
-        try {
-            result = client.execute(op);
-            final String deploymentName = name;
-            // Check to make sure there is an outcome
-            if (Operations.successful(result)) {
-                final List<ModelNode> deployments = (result.hasDefined(Operations.RESULT) ? result.get(Operations.RESULT).asList() : Collections.<ModelNode>emptyList());
-                for (ModelNode n : deployments) {
-                    if (n.asString().equals(deploymentName)) {
-                        return true;
-                    }
-                }
-            } else {
-                throw new IllegalStateException(Operations.getFailureDescription(result));
-            }
-        } catch (IOException e) {
-            throw new IllegalStateException(String.format("Could not execute operation '%s'", op), e);
-        }
-        return false;
     }
 }

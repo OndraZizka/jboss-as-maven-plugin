@@ -30,8 +30,8 @@ import java.util.List;
 
 import org.jboss.as.controller.client.ModelControllerClient;
 import org.jboss.as.plugin.common.Files;
-import org.jboss.as.plugin.common.Operations;
-import org.jboss.as.plugin.common.Streams;
+import org.jboss.as.plugin.common.IoUtils;
+import org.jboss.as.plugin.common.ServerOperations;
 import org.jboss.dmr.ModelNode;
 
 /**
@@ -70,11 +70,11 @@ final class StandaloneServer extends Server {
         try {
             if (client != null) {
                 try {
-                    client.execute(Operations.createOperation(Operations.SHUTDOWN));
+                    client.execute(ServerOperations.createOperation(ServerOperations.SHUTDOWN));
                 } catch (IOException e) {
                     // no-op
                 } finally {
-                    Streams.safeClose(client);
+                    IoUtils.safeClose(client);
                     client = null;
                 }
                 try {
@@ -137,6 +137,10 @@ final class StandaloneServer extends Server {
             cmd.add("-server-config");
             cmd.add(serverInfo.getServerConfig());
         }
+        if (serverInfo.getPropertiesFile() != null) {
+            cmd.add("-P");
+            cmd.add(serverInfo.getPropertiesFile());
+        }
         return cmd;
     }
 
@@ -146,9 +150,9 @@ final class StandaloneServer extends Server {
             isRunning = false;
         } else {
             try {
-                final ModelNode result = client.execute(Operations.createReadAttributeOperation(Operations.SERVER_STATE));
-                isRunning = Operations.successful(result) && !STARTING.equals(Operations.readResultAsString(result)) &&
-                        !STOPPING.equals(Operations.readResultAsString(result));
+                final ModelNode result = client.execute(ServerOperations.createReadAttributeOperation(ServerOperations.SERVER_STATE));
+                isRunning = ServerOperations.isSuccessfulOutcome(result) && !STARTING.equals(ServerOperations.readResultAsString(result)) &&
+                        !STOPPING.equals(ServerOperations.readResultAsString(result));
             } catch (Throwable ignore) {
                 isRunning = false;
             }
